@@ -21,14 +21,18 @@ class VideoToVideo():
         self.opt = opt
         cfg.model_path = opt.model_path
         cfg.embedder.pretrained = osp.join(opt.model_dir, opt.ckpt_clip)
-        self.device = torch.device(f'cuda:0')
-        clip_encoder = FrozenOpenCLIPEmbedder(
-            pretrained=cfg.embedder.pretrained, device=self.device)
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+        # Initialize and move clip_encoder to the GPU
+        clip_encoder = FrozenOpenCLIPEmbedder(pretrained=cfg.embedder.pretrained, device=self.device)
+        clip_encoder.model = torch.nn.DataParallel(clip_encoder.model)  # Enable Data Parallelism
         clip_encoder.model.to(self.device)
         self.clip_encoder = clip_encoder
         logger.info(f'Build encoder with {cfg.embedder.type}')
 
+        # Initialize and move generator to the GPU
         generator = ControlledV2VUNet()
+        generator = torch.nn.DataParallel(generator)  # Enable Data Parallelism
         generator = generator.to(self.device)
         generator.eval()
 
@@ -40,6 +44,7 @@ class VideoToVideo():
         self.generator = generator.half()
         logger.info('Load model path {}, with local status {}'.format(cfg.model_path, ret))
 
+        # Initialize and move diffusion to the GPU
         sigmas = noise_schedule(
             schedule='logsnr_cosine_interp',
             n=1000,
@@ -50,8 +55,10 @@ class VideoToVideo():
         self.diffusion = diffusion
         logger.info('Build diffusion with GaussianDiffusion')
 
+        # Initialize and move autoencoder to the GPU
         cfg.auto_encoder.pretrained = osp.join(opt.model_dir, opt.ckpt_autoencoder)
         autoencoder = AutoencoderKL(**cfg.auto_encoder)
+        autoencoder = torch.nn.DataParallel(autoencoder)  # Enable Data Parallelism
         autoencoder.eval()
         for param in autoencoder.parameters():
             param.requires_grad = False
@@ -64,7 +71,6 @@ class VideoToVideo():
 
         negative_y = clip_encoder(self.negative_prompt).detach()
         self.negative_y = negative_y
-
 
     def test(self, input: Dict[str, Any], total_noise_levels=1000, \
                  steps=50, guide_scale=7.5, noise_aug=200):
